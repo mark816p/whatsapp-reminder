@@ -88,6 +88,94 @@ jobs:
           go-version: '1.25'
           cache: false
 
+      - name: Patch main.go for latest whatsmeow API
+        run: |
+          cat << 'GOEOF' > main.go
+          package main
+
+          import (
+          	"context"
+          	"fmt"
+          	"os"
+          	"strings"
+          	"time"
+
+          	_ "github.com/mattn/go-sqlite3"
+          	"go.mau.fi/whatsmeow"
+          	"go.mau.fi/whatsmeow/store/sqlstore"
+          	"go.mau.fi/whatsmeow/types"
+          	waLog "go.mau.fi/whatsmeow/util/log"
+          	waProto "go.mau.fi/whatsmeow/binary/proto"
+          	"google.golang.org/protobuf/proto"
+          )
+
+          func main() {
+          	ctx := context.Background()
+          	dbLog := waLog.Stdout("Database", "ERROR", true)
+          	clientLog := waLog.Stdout("Client", "ERROR", true)
+
+          	container, err := sqlstore.New(ctx, "sqlite3", "file:whatsapp_session.db?_foreign_keys=on", dbLog)
+          	if err != nil {
+          		fmt.Printf("Failed to open database: %v\n", err)
+          		os.Exit(1)
+          	}
+
+          	deviceStore, err := container.GetFirstDevice(ctx)
+          	if err != nil {
+          		fmt.Printf("Failed to get device store: %v\n", err)
+          		os.Exit(1)
+          	}
+
+          	if deviceStore == nil {
+          		fmt.Println("No device store found.")
+          		os.Exit(1)
+          	}
+
+          	client := whatsmeow.NewClient(deviceStore, clientLog)
+          	err = client.Connect()
+          	if err != nil {
+          		fmt.Printf("Failed to connect to WhatsApp: %v\n", err)
+          		os.Exit(1)
+          	}
+          	defer client.Disconnect()
+          	fmt.Println("Successfully connected to WhatsApp!")
+
+          	targetJIDsStr := os.Getenv("TARGET_JID")
+          	if targetJIDsStr == "" {
+          		fmt.Println("Error: TARGET_JID environment variable is not set")
+          		os.Exit(1)
+          	}
+
+          	messageText := os.Getenv("MESSAGE_TEXT")
+          	if messageText == "" {
+          		fmt.Println("Error: MESSAGE_TEXT is not set")
+          		os.Exit(1)
+          	}
+
+          	for _, jidStr := range strings.Split(targetJIDsStr, ",") {
+          		jidStr = strings.TrimSpace(jidStr)
+          		if jidStr == "" {
+          			continue
+          		}
+          		targetJID, err := types.ParseJID(jidStr)
+          		if err != nil {
+          			fmt.Printf("Error parsing JID '%s': %v\n", jidStr, err)
+          			continue
+          		}
+          		msg := &waProto.Message{
+          			Conversation: proto.String(messageText),
+          		}
+          		resp, err := client.SendMessage(ctx, targetJID, msg)
+          		if err != nil {
+          			fmt.Printf("Failed to send message to %s: %v\n", jidStr, err)
+          		} else {
+          			fmt.Printf("Message successfully sent to %s! (ID: %s)\n", jidStr, resp.ID)
+          		}
+          	}
+          	time.Sleep(2 * time.Second)
+          }
+          GOEOF
+
       - name: Install Dependencies
         run: |
           go get go.mau.fi/whatsmeow@latest
@@ -96,7 +184,6 @@ jobs:
       - name: Send WhatsApp Message
         env:
           CGO_ENABLED: 1
-          # The JID for a group usually ends with @g.us
           TARGET_JID: ${{ secrets.TEAM_D_JID }}
           MESSAGE_TEXT: ${{ env.MESSAGE }}
         run: go run main.go
