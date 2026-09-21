@@ -1,0 +1,100 @@
+name: Daily WhatsApp Reminder
+
+on:
+  schedule:
+    # 2:00 PM IST is 8:30 AM UTC
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Run immediately without sleep'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout WhatsGo Repository
+        uses: actions/checkout@v4
+        with:
+          repository: mark816p/WhatsGo-forGithubActions
+
+      - name: Calculate Day 'n'
+        id: calc_day
+        run: |
+          # Anchor date: September 17, 2026 (Day 0)
+          # So September 22, 2026 is Day 5
+          ANCHOR_DATE="2026-09-17"
+          
+          # Convert anchor date to seconds since epoch
+          ANCHOR_SECONDS=$(date -u -d "$ANCHOR_DATE" +%s)
+          
+          # Get current date in seconds since epoch
+          CURRENT_SECONDS=$(date -u +%s)
+          
+          # Calculate difference in days
+          DIFF_SECONDS=$((CURRENT_SECONDS - ANCHOR_SECONDS))
+          DAYS=$((DIFF_SECONDS / 86400))
+          
+          # Format the final message
+          MESSAGE="Day ${DAYS} of reminding Kairav I am taller"
+          echo "MESSAGE=$MESSAGE" >> $GITHUB_ENV
+          echo "Calculated message: $MESSAGE"
+
+      - name: Random Sleep Delay (0 to 2 hours)
+        if: ${{ github.event_name == 'schedule' || inputs.test_mode == false }}
+        run: |
+          # RANDOM in bash gives a number between 0 and 32767
+          # We want a delay between 0 and 7200 seconds (2 hours)
+          DELAY=$((RANDOM % 7200))
+          echo "Sleeping for $DELAY seconds to randomize sending time..."
+          sleep $DELAY
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Reconstruct WhatsApp Session Database
+        env:
+          WHATSAPP_SESSION_PART1: ${{ secrets.WHATSAPP_SESSION_PART1 }}
+          WHATSAPP_SESSION_PART2: ${{ secrets.WHATSAPP_SESSION_PART2 }}
+        run: |
+          cat << 'EOF' > rebuild_db.py
+          import os, base64, gzip
+          
+          part1 = os.environ.get('WHATSAPP_SESSION_PART1', '')
+          part2 = os.environ.get('WHATSAPP_SESSION_PART2', '')
+          
+          if not part1 or not part2:
+              print("Missing secrets! Make sure you set WHATSAPP_SESSION_PART1 and WHATSAPP_SESSION_PART2.")
+              exit(1)
+              
+          encoded_data = part1 + part2
+          compressed_data = base64.b64decode(encoded_data)
+          db_data = gzip.decompress(compressed_data)
+          
+          with open("whatsapp_session.db", "wb") as f:
+              f.write(db_data)
+          print("Successfully reconstructed whatsapp_session.db!")
+          EOF
+          python rebuild_db.py
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Install Dependencies
+        run: go mod download
+
+      - name: Send WhatsApp Message
+        env:
+          CGO_ENABLED: 1
+          # The JID for a group usually ends with @g.us
+          TARGET_JID: ${{ secrets.TEAM_D_JID }}
+          MESSAGE_TEXT: ${{ env.MESSAGE }}
+        run: go run main.go
