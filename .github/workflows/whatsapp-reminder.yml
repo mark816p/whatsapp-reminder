@@ -82,6 +82,46 @@ jobs:
           EOF
           python rebuild_db.py
 
+      - name: Purge stale session keys (fix MAC mismatch)
+        run: |
+          python - << 'EOF'
+          # --- Why this step exists ---
+          # Every time two devices chat on WhatsApp, their encryption keys rotate
+          # forward step-by-step. Because the bot's database was restored from an
+          # old snapshot (the GitHub Secrets), the bot holds outdated per-session
+          # keys while the phone has already moved ahead to newer ones.
+          #
+          # When the phone tries a handshake, the bot verifies the digital seal
+          # (MAC) using stale keys -> the math fails -> WhatsApp rejects the
+          # handshake and the phone shows "Waiting for this message."
+          #
+          # Fix: delete the stale rotating-key tables before connecting.
+          # The bot will then fetch fresh keys directly from WhatsApp's servers
+          # on first connect, clearing the MAC error entirely.
+          # The device identity (JID, registration) is NOT touched.
+          import sqlite3
+
+          db = sqlite3.connect("whatsapp_session.db")
+          cur = db.cursor()
+
+          tables_to_purge = [
+              "whatsmeow_sessions",        # per-conversation Signal sessions (the main culprit)
+              "whatsmeow_sender_keys",     # group sender keys
+              "whatsmeow_app_state_sync_keys",  # app-state sync keys
+          ]
+
+          for table in tables_to_purge:
+              try:
+                  cur.execute(f"DELETE FROM {table}")
+                  print(f"Purged {cur.rowcount} rows from {table}")
+              except sqlite3.OperationalError as e:
+                  print(f"Skipped {table}: {e}")
+
+          db.commit()
+          db.close()
+          print("Stale keys purged. Bot will fetch fresh keys on connect.")
+          EOF
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
