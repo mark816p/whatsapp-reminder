@@ -1,16 +1,13 @@
 name: Daily WhatsApp Reminder
 
 on:
-  schedule:
-    # 2:00 PM IST is 8:30 AM UTC
-    - cron: '30 8 * * *'
   workflow_dispatch:
     inputs:
       test_mode:
         description: 'Run immediately without sleep'
         required: false
         type: boolean
-        default: true
+        default: false
 
 jobs:
   remind:
@@ -44,7 +41,7 @@ jobs:
           echo "Calculated message: $MESSAGE"
 
       - name: Random Sleep Delay (0 to 2 hours)
-        if: ${{ github.event_name == 'schedule' || inputs.test_mode == false }}
+        if: ${{ inputs.test_mode == false || inputs.test_mode == 'false' }}
         run: |
           # RANDOM in bash gives a number between 0 and 32767
           # We want a delay between 0 and 7200 seconds (2 hours)
